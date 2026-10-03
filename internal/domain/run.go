@@ -97,39 +97,29 @@ func (r *FermentationRun) AddObservation(observation GravityObservation) error {
 	if r.State != RunFermenting || r.StartedAt == nil {
 		return NewError(CodeRunState, "observations require a fermenting run")
 	}
+	if r.Intake.CommittedCount() >= 500 {
+		return NewError(CodeObservationConflict,
+			"run cannot contain more than 500 observations")
+	}
+	if err := r.Intake.CheckSequence(int64(observation.Sequence)); err != nil {
+		r.Intake.RecordRejected()
+		return err
+	}
 	var previous *GravityObservation
 	if len(r.Observations) > 0 {
 		value := r.Observations[len(r.Observations)-1]
 		previous = &value
 	}
 	if err := ValidateObservation(*r.StartedAt, previous, observation, observation.ReceivedAt); err != nil {
+		r.Intake.RecordRejected()
 		return err
 	}
 	observation.RunID = r.ID
 	r.Observations = append(r.Observations, observation)
+	r.Intake.RecordAccepted(int64(observation.Sequence))
 	r.UpdatedAt = observation.ReceivedAt.UTC()
 	r.Version++
 	return nil
-}
-
-// BeginObservationAttempt reserves an intake slot for a submission before its
-// payload is validated, so the sequence assignment stays stable while the
-// request is being committed.
-func (r *FermentationRun) BeginObservationAttempt(sequence int64) error {
-	if r.State != RunFermenting || r.StartedAt == nil {
-		return NewError(CodeRunState, "observations require a fermenting run")
-	}
-	if r.Intake.CommittedCount() >= 500 {
-		return NewError(CodeObservationConflict,
-			"run cannot contain more than 500 observations")
-	}
-	return r.Intake.Reserve(sequence)
-}
-
-// CommitObservationAttempt publishes the reserved intake slot as durable
-// progress once the observation itself has been accepted.
-func (r *FermentationRun) CommitObservationAttempt() {
-	r.Intake.Commit()
 }
 
 func (r *FermentationRun) BeginConditioning(now time.Time) error {
@@ -140,7 +130,6 @@ func (r *FermentationRun) BeginConditioning(now time.Time) error {
 		return NewError(CodeRunState,
 			"conditioning requires at least two observations")
 	}
-	r.Intake.Release()
 	r.State = RunConditioning
 	r.UpdatedAt = now.UTC()
 	r.Version++
@@ -155,7 +144,6 @@ func (r *FermentationRun) Complete(originalGravity float64, now time.Time) error
 		return NewError(CodeRunState,
 			"completion requires at least three observations")
 	}
-	r.Intake.Release()
 	stamp := now.UTC()
 	final := r.Observations[len(r.Observations)-1]
 	metrics := CalculateMetrics(originalGravity, final.Gravity, len(r.Observations))
@@ -171,7 +159,6 @@ func (r *FermentationRun) Abort(now time.Time) error {
 	if r.State == RunCompleted || r.State == RunAborted {
 		return NewError(CodeRunState, "completed or aborted runs cannot be aborted")
 	}
-	r.Intake.Release()
 	stamp := now.UTC()
 	r.State = RunAborted
 	r.EndedAt = &stamp

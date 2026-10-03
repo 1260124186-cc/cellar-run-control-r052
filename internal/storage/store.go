@@ -82,7 +82,7 @@ func normalizeSnapshot(value domain.Snapshot) (domain.Snapshot, error) {
 		return domain.Snapshot{}, err
 	}
 	for id, run := range value.Runs {
-		run.Intake.ResumeAttempt()
+		run.Intake.Reconcile(int64(len(run.Observations)))
 		value.Runs[id] = run
 	}
 	return value, nil
@@ -161,14 +161,6 @@ func (s *Store) Update(expected *int64, mutate func(*domain.Snapshot) error) err
 	}
 	candidate := s.snapshot.Clone()
 	if err := mutate(&candidate); err != nil {
-		for id, run := range candidate.Runs {
-			reserved, found := s.snapshot.Runs[id]
-			if !found || !run.Intake.Reserved() {
-				continue
-			}
-			reserved.Intake = run.Intake.Clone()
-			s.snapshot.Runs[id] = reserved
-		}
 		return err
 	}
 	candidate.Revision = s.snapshot.Revision + 1
