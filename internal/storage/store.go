@@ -82,7 +82,10 @@ func normalizeSnapshot(value domain.Snapshot) (domain.Snapshot, error) {
 		return domain.Snapshot{}, err
 	}
 	for id, run := range value.Runs {
-		run.Intake.ResumeAttempt()
+		// Intake counters are derived from the observations that were
+		// actually persisted, so a restart always resumes immediately after
+		// the last saved observation.
+		run.Intake.Resync(run.Observations)
 		value.Runs[id] = run
 	}
 	return value, nil
@@ -161,14 +164,8 @@ func (s *Store) Update(expected *int64, mutate func(*domain.Snapshot) error) err
 	}
 	candidate := s.snapshot.Clone()
 	if err := mutate(&candidate); err != nil {
-		for id, run := range candidate.Runs {
-			reserved, found := s.snapshot.Runs[id]
-			if !found || !run.Intake.Reserved() {
-				continue
-			}
-			reserved.Intake = run.Intake.Clone()
-			s.snapshot.Runs[id] = reserved
-		}
+		// The candidate is a throwaway clone: a failed submission must not
+		// publish any sequence reservation or count change to live state.
 		return err
 	}
 	candidate.Revision = s.snapshot.Revision + 1

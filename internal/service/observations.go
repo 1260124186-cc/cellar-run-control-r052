@@ -22,14 +22,12 @@ func (s *Service) AppendObservation(
 			Note:         input.Note,
 			ReceivedAt:   now,
 		}
-		if err := run.BeginObservationAttempt(int64(input.Sequence)); err != nil {
-			return err
-		}
-		snapshot.Runs[id] = run.Clone()
+		// AddObservation validates the whole submission against the run's
+		// already-saved observations and appends only when valid, so a failed
+		// request consumes no sequence and leaves the run untouched.
 		if err := run.AddObservation(observation); err != nil {
 			return err
 		}
-		run.CommitObservationAttempt()
 		snapshot.Runs[id] = run.Clone()
 		updated = run.Clone()
 		return nil

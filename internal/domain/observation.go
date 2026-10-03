@@ -2,90 +2,40 @@ package domain
 
 import "time"
 
-// ObservationIntake accounts for how many observations a run has accepted and
-// which sequence value the next accepted observation must use. The committed
-// counters travel with the run, while the staged counters describe the single
-// submission that is currently being committed.
+// ObservationIntake is a derived view of how many observations a run has
+// actually accepted and which sequence value the next accepted observation
+// must use. It is recomputed from the run's persisted observations, so a
+// rejected submission never reserves a sequence or inflates the count and a
+// restart always resumes from the observations already saved.
 type ObservationIntake struct {
 	AcceptedCount    int64 `json:"accepted_count"`
 	AcceptedSequence int64 `json:"accepted_sequence"`
 	RejectedAttempts int64 `json:"rejected_attempts"`
-
-	staged         bool
-	stagedSequence int64
-	stagedCount    int64
 }
 
 func (i ObservationIntake) Clone() ObservationIntake {
 	return i
 }
 
+// CommittedCount reports the number of observations durably accepted.
 func (i ObservationIntake) CommittedCount() int64 {
 	return i.AcceptedCount
 }
 
-func (i ObservationIntake) Reserved() bool {
-	return i.staged
-}
-
 // ExpectedSequence reports the sequence value the next contiguous submission
-// must carry, including a reservation that has not been released yet.
+// must carry.
 func (i ObservationIntake) ExpectedSequence() int64 {
-	base := i.AcceptedSequence
-	if i.staged && i.stagedSequence > base {
-		base = i.stagedSequence
-	}
-	return base + 1
+	return i.AcceptedSequence + 1
 }
 
-// Reserve claims the next contiguous sequence for an in-flight submission.
-func (i *ObservationIntake) Reserve(sequence int64) error {
-	if sequence < 1 {
-		i.RejectedAttempts++
-		return NewError(CodeObservationConflict,
-			"observation sequence must begin at 1")
+// Resync derives the intake counters from the observations that were actually
+// persisted. Only an accepted, appended observation advances the counters.
+func (i *ObservationIntake) Resync(observations []GravityObservation) {
+	i.AcceptedCount = int64(len(observations))
+	i.AcceptedSequence = 0
+	if len(observations) > 0 {
+		i.AcceptedSequence = int64(observations[len(observations)-1].Sequence)
 	}
-	if sequence != i.ExpectedSequence() {
-		i.RejectedAttempts++
-		return NewError(CodeObservationConflict,
-			"observation sequence must be contiguous and begin at 1")
-	}
-	i.staged = true
-	i.stagedSequence = sequence
-	i.stagedCount = i.AcceptedCount + 1
-	return nil
-}
-
-// Commit publishes a reserved submission as durable intake progress.
-func (i *ObservationIntake) Commit() {
-	if i.staged {
-		i.AcceptedSequence = i.stagedSequence
-		i.AcceptedCount = i.stagedCount
-	}
-	i.staged = false
-	i.stagedSequence = i.AcceptedSequence
-	i.stagedCount = i.AcceptedCount
-}
-
-// Release drops a reservation whose submission was not accepted.
-func (i *ObservationIntake) Release() {
-	if !i.staged {
-		return
-	}
-	i.RejectedAttempts++
-	i.staged = false
-	i.stagedSequence = i.AcceptedSequence
-	i.stagedCount = i.AcceptedCount
-}
-
-// ResumeAttempt restores the reservation that was still open when the previous
-// process stopped.
-func (i *ObservationIntake) ResumeAttempt() {
-	i.AcceptedSequence = i.stagedSequence
-	i.AcceptedCount = i.stagedCount
-	i.staged = false
-	i.stagedSequence = i.AcceptedSequence
-	i.stagedCount = i.AcceptedCount
 }
 
 type GravityObservation struct {
